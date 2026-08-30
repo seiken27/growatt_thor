@@ -87,17 +87,44 @@ class MaxCurrentNumber(BaseConfigNumber):
         previous = int(round(current)) if current is not None else None
         self.coordinator.max_current = value
         self.coordinator.async_set_updated_data(True)
-        _LOGGER.info("📝 Max Current UI updated to %d A (queued for write)", value)
+        _LOGGER.info("📝 Max Current UI → %d A (SetChargingProfile, direct)", value)
 
-        await self.coordinator.queue_write(
-            self._write_to_thor,
-            charge_point,
-            value,
-            previous,
-            dedupe_key=self._config_key,
+        # Direct dispatch — no queue. SetChargingProfile is safe to hammer,
+        # unlike ChangeConfiguration(G_MaxCurrent) which writes to flash.
+        self.hass.async_create_task(
+            self._write_via_profile(charge_point, value, previous)
         )
 
+    async def _write_via_profile(self, charge_point, value: int, previous: int | None):
+        try:
+            txn = self.coordinator.transaction_id
+            result = await charge_point.set_charging_profile(
+                connector_id=1,
+                limit_amps=value,
+                transaction_id=txn if txn else None,
+            )
+            status = result.get("status")
+            if status == "Accepted":
+                self.coordinator.max_current = value
+                self.coordinator.async_set_updated_data(True)
+                _LOGGER.info("✅ Max Current → %d A (profile accepted)", value)
+            else:
+                _LOGGER.error(
+                    "❌ SetChargingProfile rejected: %s — rolling back to %s A",
+                    status, previous,
+                )
+                if previous is not None:
+                    self.coordinator.max_current = previous
+                    self.coordinator.async_set_updated_data(True)
+        except Exception as exc:
+            _LOGGER.error("❌ Failed SetChargingProfile: %s", exc, exc_info=True)
+            if previous is not None:
+                self.coordinator.max_current = previous
+                self.coordinator.async_set_updated_data(True)
+
     async def _write_to_thor(self, charge_point, value: int, previous: int | None):
+        # Legacy path via ChangeConfiguration(G_MaxCurrent). Kept for reference
+        # but no longer wired up — use _write_via_profile instead.
         try:
             result = await charge_point.change_configuration(
                 self._config_key,

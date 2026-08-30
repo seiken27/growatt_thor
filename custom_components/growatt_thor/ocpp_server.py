@@ -12,6 +12,8 @@ from ocpp.v16.enums import (
     DataTransferStatus,
     ConfigurationStatus,
     RemoteStartStopStatus,
+    ChargingProfileStatus,
+    ClearChargingProfileStatus,
 )
 
 from ocpp.routing import on
@@ -469,6 +471,77 @@ class GrowattChargePoint(OcppChargePoint):
             return {"status": status.value if hasattr(status, "value") else str(status)}
         except Exception as exc:
             _LOGGER.error("Failed to stop transaction: %s", exc, exc_info=True)
+            return {"status": "Rejected"}
+
+    # ─────────────────────────────
+    # SetChargingProfile / ClearChargingProfile
+    # ─────────────────────────────
+    # THOR speaks OCPP 1.6 smart-charging natively and handles rapid
+    # SetChargingProfile calls fine (unlike ChangeConfiguration, which
+    # writes to flash and crashes the FW when hammered). Use this for
+    # current control instead of G_MaxCurrent.
+
+    async def set_charging_profile(
+        self,
+        connector_id: int,
+        limit_amps: int,
+        transaction_id: int | None = None,
+        profile_id: int = 1,
+        stack_level: int = 1,
+    ) -> dict:
+        """Send SetChargingProfile with a single-period ampere limit.
+
+        If transaction_id is provided, uses TxProfile scoped to that
+        transaction (takes effect immediately). Otherwise uses
+        TxDefaultProfile so the next transaction picks up the limit.
+        """
+        cs_profile = {
+            "chargingProfileId": profile_id,
+            "stackLevel": stack_level,
+            "chargingProfileKind": "Relative",
+            "chargingSchedule": {
+                "chargingRateUnit": "A",
+                "chargingSchedulePeriod": [
+                    {"startPeriod": 0, "limit": int(limit_amps)}
+                ],
+            },
+        }
+        if transaction_id is not None:
+            cs_profile["transactionId"] = int(transaction_id)
+            cs_profile["chargingProfilePurpose"] = "TxProfile"
+        else:
+            cs_profile["chargingProfilePurpose"] = "TxDefaultProfile"
+
+        try:
+            _LOGGER.info(
+                "⚡ SetChargingProfile: connector=%d limit=%dA txn=%s purpose=%s",
+                connector_id, limit_amps, transaction_id, cs_profile["chargingProfilePurpose"],
+            )
+            result = await self.call(
+                call.SetChargingProfile(
+                    connector_id=connector_id,
+                    cs_charging_profiles=cs_profile,
+                )
+            )
+            status = getattr(result, "status", ChargingProfileStatus.rejected)
+            _LOGGER.info("SetChargingProfile result: %s", status)
+            return {"status": status.value if hasattr(status, "value") else str(status)}
+        except Exception as exc:
+            _LOGGER.error("Failed SetChargingProfile: %s", exc, exc_info=True)
+            return {"status": "Rejected"}
+
+    async def clear_charging_profile(self, profile_id: int | None = None) -> dict:
+        try:
+            _LOGGER.info("🧹 ClearChargingProfile: id=%s", profile_id)
+            kwargs = {}
+            if profile_id is not None:
+                kwargs["id"] = int(profile_id)
+            result = await self.call(call.ClearChargingProfile(**kwargs))
+            status = getattr(result, "status", ClearChargingProfileStatus.unknown)
+            _LOGGER.info("ClearChargingProfile result: %s", status)
+            return {"status": status.value if hasattr(status, "value") else str(status)}
+        except Exception as exc:
+            _LOGGER.error("Failed ClearChargingProfile: %s", exc, exc_info=True)
             return {"status": "Rejected"}
 
 

@@ -19,9 +19,78 @@ async def async_setup_entry(hass, entry, async_add_entities):
     coordinator = hass.data[DOMAIN]["coordinator"]
 
     async_add_entities([
+        ChargeControlSwitch(coordinator, entry),
         LoadBalancingEnableSwitch(coordinator, entry),
         LcdDisplaySwitch(coordinator, entry),
     ])
+
+
+DEFAULT_ID_TAG = "12345678"  # Growatt handshake key
+
+
+class ChargeControlSwitch(CoordinatorEntity, SwitchEntity):
+    """Charge control switch — on = start transaction, off = stop.
+
+    Sends RemoteStartTransaction / RemoteStopTransaction directly, no queue.
+    Matches the behaviour of the official OCPP integration's charge_control
+    switch, which fires cleanly and can be toggled as fast as you like.
+    """
+
+    _attr_has_entity_name = True
+    _attr_name = "Charge Control"
+    _attr_icon = "mdi:ev-station"
+
+    def __init__(self, coordinator, entry):
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{entry.entry_id}_charge_control"
+        self._attr_device_info = {
+            "identifiers": {(DOMAIN, entry.entry_id)},
+            "name": "Growatt THOR EV Charger",
+            "manufacturer": "Growatt",
+            "model": "THOR",
+        }
+        self.hass = coordinator.hass
+
+    @property
+    def is_on(self):
+        """On while a transaction is active."""
+        return self.coordinator.status == "Charging" or self.coordinator.transaction_id is not None
+
+    async def async_turn_on(self, **kwargs):
+        charge_point = self.hass.data.get(DOMAIN, {}).get("charge_point")
+        if not charge_point:
+            _LOGGER.warning("Cannot start charging: charger not connected")
+            return
+        if self.coordinator.status == "Charging":
+            _LOGGER.debug("Charge control on — already charging, no-op")
+            return
+        result = await charge_point.remote_start_transaction(
+            connector_id=1, id_tag=DEFAULT_ID_TAG
+        )
+        status = result.get("status")
+        if status == "Accepted":
+            _LOGGER.info("✅ Charge control ON — RemoteStart accepted")
+            self.coordinator.async_set_updated_data(True)
+        else:
+            _LOGGER.error("❌ RemoteStart rejected: %s", status)
+
+    async def async_turn_off(self, **kwargs):
+        charge_point = self.hass.data.get(DOMAIN, {}).get("charge_point")
+        if not charge_point:
+            _LOGGER.warning("Cannot stop charging: charger not connected")
+            return
+        txn = self.coordinator.transaction_id
+        if txn is None and self.coordinator.status != "Charging":
+            _LOGGER.debug("Charge control off — no active session, no-op")
+            return
+        tid = int(txn) if txn is not None else 0
+        result = await charge_point.remote_stop_transaction(transaction_id=tid)
+        status = result.get("status")
+        if status == "Accepted":
+            _LOGGER.info("✅ Charge control OFF — RemoteStop accepted (txn=%s)", tid)
+            self.coordinator.async_set_updated_data(True)
+        else:
+            _LOGGER.error("❌ RemoteStop rejected: %s", status)
 
 
 class LoadBalancingEnableSwitch(CoordinatorEntity, SwitchEntity):
