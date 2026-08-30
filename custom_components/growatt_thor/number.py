@@ -70,9 +70,9 @@ class MaxCurrentNumber(BaseConfigNumber):
 
     _attr_name = "Max Charge Power"
     _attr_icon = "mdi:ev-station"
-    _attr_native_min_value = 1.5
+    _attr_native_min_value = 4.2   # 6 A × 3 phases × 230 V ≈ 4.14 kW; THOR won't start below this
     _attr_native_max_value = 22.0
-    _attr_native_step = 0.5
+    _attr_native_step = 0.2
     _attr_native_unit_of_measurement = "kW"
     _attr_suggested_display_precision = 1
     _config_key = "G_MaxCurrent"
