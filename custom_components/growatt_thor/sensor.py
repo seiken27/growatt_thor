@@ -72,8 +72,37 @@ async def async_setup_entry(hass, entry, async_add_entities):
 
             # ── Elektricteitstarief ───────────────────
             ElectricityPriceSensor(coordinator, entry),
+
+            # ── Flash config (read-only info) ────────────
+            FlashMaxCurrentSensor(coordinator, entry),
         ]
     )
+
+
+class FlashMaxCurrentSensor(BaseSensor):
+    """Persistent G_MaxCurrent value stored in the THOR's flash config."""
+
+    _attr_name = "Flash Max Current"
+    _attr_icon = "mdi:memory"
+    _attr_device_class = SensorDeviceClass.CURRENT
+    _attr_native_unit_of_measurement = UnitOfElectricCurrent.AMPERE
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, coordinator, entry):
+        super().__init__(coordinator, entry, "flash_max_current")
+
+    @property
+    def native_value(self):
+        value = self.coordinator.max_current
+        return int(value) if value is not None else None
+
+    @property
+    def extra_state_attributes(self):
+        value = self.coordinator.max_current
+        if value is None:
+            return None
+        kw_3ph = round(int(value) * 3 * 230 / 1000.0, 1)
+        return {"approx_kw_3phase": kw_3ph, "config_key": "G_MaxCurrent"}
 
 
 # ─────────────────────────────
