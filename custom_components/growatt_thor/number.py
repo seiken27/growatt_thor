@@ -47,14 +47,34 @@ class BaseConfigNumber(CoordinatorEntity, NumberEntity):
 # Max Current
 # ─────────────────────────────
 
-class MaxCurrentNumber(BaseConfigNumber):
+_NOMINAL_VOLTAGE = 230.0
+_PHASES = 3  # THOR + XC40 onboard AC are both 3-phase
 
-    _attr_name = "Max Current"
-    _attr_icon = "mdi:current-ac"
-    _attr_native_min_value = 6
-    _attr_native_max_value = 32
-    _attr_native_step = 1
-    _attr_native_unit_of_measurement = "A"
+
+def _kw_to_amps(kw: float) -> int:
+    amps = (float(kw) * 1000.0) / (_PHASES * _NOMINAL_VOLTAGE)
+    return max(6, min(32, int(round(amps))))
+
+
+def _amps_to_kw(amps: float) -> float:
+    return round((float(amps) * _PHASES * _NOMINAL_VOLTAGE) / 1000.0, 1)
+
+
+class MaxCurrentNumber(BaseConfigNumber):
+    """Charge power slider in kW.
+
+    UI shows kW (easier to reason about); OCPP profile is still sent in
+    Amps because that's what the THOR reliably accepts. Conversion
+    assumes 3-phase @ 230 V nominal.
+    """
+
+    _attr_name = "Max Charge Power"
+    _attr_icon = "mdi:ev-station"
+    _attr_native_min_value = 1.5
+    _attr_native_max_value = 22.0
+    _attr_native_step = 0.5
+    _attr_native_unit_of_measurement = "kW"
+    _attr_suggested_display_precision = 1
     _config_key = "G_MaxCurrent"
 
     def __init__(self, coordinator, entry):
@@ -69,30 +89,32 @@ class MaxCurrentNumber(BaseConfigNumber):
     @property
     def native_value(self):
         value = self.coordinator.max_current
-        return int(value) if value is not None else None
+        return _amps_to_kw(value) if value is not None else None
 
     async def async_set_native_value(self, value: float) -> None:
-        value = int(round(value))
+        kw = float(value)
+        amps = _kw_to_amps(kw)
 
         charge_point = self.hass.data.get(DOMAIN, {}).get("charge_point")
         if not charge_point:
-            _LOGGER.warning("Cannot change Max Current: charger not connected")
+            _LOGGER.warning("Cannot change Max Charge Power: charger not connected")
             return
 
         current = self.coordinator.max_current
-        if current is not None and int(round(current)) == value:
-            _LOGGER.debug("Max Current unchanged (%d A) - skipping write", value)
+        if current is not None and int(round(current)) == amps:
+            _LOGGER.debug("Max Charge Power unchanged (%.1f kW = %d A) - skipping", kw, amps)
             return
 
         previous = int(round(current)) if current is not None else None
-        self.coordinator.max_current = value
+        self.coordinator.max_current = amps
         self.coordinator.async_set_updated_data(True)
-        _LOGGER.info("📝 Max Current UI → %d A (SetChargingProfile, direct)", value)
+        _LOGGER.info(
+            "📝 Max Charge Power UI → %.1f kW = %d A/phase (SetChargingProfile, direct)",
+            kw, amps,
+        )
 
-        # Direct dispatch — no queue. SetChargingProfile is safe to hammer,
-        # unlike ChangeConfiguration(G_MaxCurrent) which writes to flash.
         self.hass.async_create_task(
-            self._write_via_profile(charge_point, value, previous)
+            self._write_via_profile(charge_point, amps, previous)
         )
 
     async def _write_via_profile(self, charge_point, value: int, previous: int | None):
@@ -107,7 +129,10 @@ class MaxCurrentNumber(BaseConfigNumber):
             if status == "Accepted":
                 self.coordinator.max_current = value
                 self.coordinator.async_set_updated_data(True)
-                _LOGGER.info("✅ Max Current → %d A (profile accepted)", value)
+                _LOGGER.info(
+                    "✅ Max Charge Power → %d A (≈ %.1f kW, profile accepted)",
+                    value, _amps_to_kw(value),
+                )
             else:
                 _LOGGER.error(
                     "❌ SetChargingProfile rejected: %s — rolling back to %s A",
